@@ -95,6 +95,12 @@ export default function Studio() {
   const [cameras, setCameras] = useState({});
   const [activeCameraId, setActiveCameraId] = useState(null);
   const [activeLayout, setActiveLayout] = useState("single");
+  const [slotAssignments, setSlotAssignments] = useState({
+    slot1: "",
+    slot2: "",
+    slot3: "",
+    slot4: "",
+  });
   const [mutedCameras, setMutedCameras] = useState({});
   const [activeAudioSource, setActiveAudioSource] = useState(null);
   const [commentaryActive, setCommentaryActive] = useState(false);
@@ -222,6 +228,43 @@ export default function Studio() {
       ctx.restore();
     }
   }, [drawVideoFit]);
+
+  // Helper to resolve camera slot assignments (respecting manual overrides and auto-filling unassigned slots)
+  const getResolvedSlots = useCallback(() => {
+    const sortedCams = Object.values(cameras).sort((a, b) => a.id.localeCompare(b.id));
+    const resolved = { slot1: null, slot2: null, slot3: null, slot4: null };
+    const usedIds = new Set();
+
+    const slots = ["slot1", "slot2", "slot3", "slot4"];
+    
+    // Step 1: Assign manual overrides
+    slots.forEach((slot) => {
+      const manualId = slotAssignments[slot];
+      if (manualId && cameras[manualId]) {
+        resolved[slot] = cameras[manualId];
+        usedIds.add(manualId);
+      }
+    });
+
+    // Step 2: If slot1 is still empty, assign activeCameraId as primary
+    if (!resolved.slot1 && activeCameraId && cameras[activeCameraId]) {
+      resolved.slot1 = cameras[activeCameraId];
+      usedIds.add(activeCameraId);
+    }
+
+    // Step 3: Fill remaining empty slots with unused cameras
+    slots.forEach((slot) => {
+      if (!resolved[slot]) {
+        const nextCam = sortedCams.find((c) => !usedIds.has(c.id));
+        if (nextCam) {
+          resolved[slot] = nextCam;
+          usedIds.add(nextCam.id);
+        }
+      }
+    });
+
+    return resolved;
+  }, [cameras, slotAssignments, activeCameraId]);
 
   // Render overlay
   const renderOverlay = useCallback((ctx, overlay) => {
@@ -666,16 +709,16 @@ export default function Studio() {
       ctx.fillStyle = "#080C0F";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const cameraList = Object.values(cameras).sort((a, b) => a.id.localeCompare(b.id));
-      const primaryCam = cameras[activeCameraId] || cameraList[0] || null;
+      const cameraList = Object.values(cameras);
+      const { slot1: cam1, slot2: cam2, slot3: cam3, slot4: cam4 } = getResolvedSlots();
 
       if (cameraList.length > 0) {
         if (activeLayout === "single") {
-          if (primaryCam) {
+          if (cam1) {
             drawCameraFeed(
               ctx,
-              primaryCam,
-              `${primaryCam.id.split("_")[0]} (Main)`,
+              cam1,
+              `${cam1.id.split("_")[0]} (Main)`,
               0,
               0,
               canvas.width,
@@ -683,14 +726,12 @@ export default function Studio() {
             );
           }
         } else if (activeLayout === "side-by-side") {
-          const cam1 = primaryCam;
-          const cam2 = cameraList.find(c => c.id !== cam1.id) || null;
           const halfW = canvas.width / 2;
 
           drawCameraFeed(
             ctx,
             cam1,
-            `${cam1.id.split("_")[0]} (Left)`,
+            cam1 ? `${cam1.id.split("_")[0]} (Left)` : "Camera 1 (Offline)",
             0,
             0,
             halfW,
@@ -710,21 +751,18 @@ export default function Studio() {
           ctx.fillStyle = "#1E293B";
           ctx.fillRect(halfW - 1, 0, 2, canvas.height);
         } else if (activeLayout === "pip") {
-          const mainCam = primaryCam;
-          const pipCam = cameraList.find(c => c.id !== mainCam.id) || null;
-
           // Main video background
           drawCameraFeed(
             ctx,
-            mainCam,
-            `${mainCam.id.split("_")[0]} (Main)`,
+            cam1,
+            cam1 ? `${cam1.id.split("_")[0]} (Main)` : "Camera 1 (Offline)",
             0,
             0,
             canvas.width,
             canvas.height
           );
 
-          if (pipCam) {
+          if (cam2) {
             const pipW = canvas.width / 4;
             const pipH = canvas.height / 4;
             const pipX = canvas.width - pipW - 20;
@@ -739,8 +777,8 @@ export default function Studio() {
 
             drawCameraFeed(
               ctx,
-              pipCam,
-              `${pipCam.id.split("_")[0]} (PiP)`,
+              cam2,
+              `${cam2.id.split("_")[0]} (PiP)`,
               pipX,
               pipY,
               pipW,
@@ -751,13 +789,7 @@ export default function Studio() {
           const w = canvas.width / 2;
           const h = canvas.height / 2;
 
-          const cam1 = primaryCam;
-          const otherCams = cameraList.filter(c => c.id !== cam1.id);
-          const cam2 = otherCams[0] || null;
-          const cam3 = otherCams[1] || null;
-          const cam4 = otherCams[2] || null;
-
-          drawCameraFeed(ctx, cam1, `${cam1.id.split("_")[0]} (Cam 1)`, 0, 0, w, h);
+          drawCameraFeed(ctx, cam1, cam1 ? `${cam1.id.split("_")[0]} (Cam 1)` : "Camera 1 (Offline)", 0, 0, w, h);
           drawCameraFeed(ctx, cam2, cam2 ? `${cam2.id.split("_")[0]} (Cam 2)` : "Camera 2 (Offline)", w, 0, w, h);
           drawCameraFeed(ctx, cam3, cam3 ? `${cam3.id.split("_")[0]} (Cam 3)` : "Camera 3 (Offline)", 0, h, w, h);
           drawCameraFeed(ctx, cam4, cam4 ? `${cam4.id.split("_")[0]} (Cam 4)` : "Camera 4 (Offline)", w, h, w, h);
@@ -771,14 +803,9 @@ export default function Studio() {
           const sideW = canvas.width * 0.25;
           const sideH = canvas.height / 2;
 
-          const mainCam = primaryCam;
-          const otherCams = cameraList.filter(c => c.id !== mainCam.id);
-          const sideCam1 = otherCams[0] || null;
-          const sideCam2 = otherCams[1] || null;
-
-          drawCameraFeed(ctx, mainCam, `${mainCam.id.split("_")[0]} (Wide)`, 0, 0, mainW, canvas.height);
-          drawCameraFeed(ctx, sideCam1, sideCam1 ? `${sideCam1.id.split("_")[0]} (CU 1)` : "Camera 2 (Offline)", mainW, 0, sideW, sideH);
-          drawCameraFeed(ctx, sideCam2, sideCam2 ? `${sideCam2.id.split("_")[0]} (CU 2)` : "Camera 3 (Offline)", mainW, sideH, sideW, sideH);
+          drawCameraFeed(ctx, cam1, cam1 ? `${cam1.id.split("_")[0]} (Wide)` : "Camera 1 (Offline)", 0, 0, mainW, canvas.height);
+          drawCameraFeed(ctx, cam2, cam2 ? `${cam2.id.split("_")[0]} (CU 1)` : "Camera 2 (Offline)", mainW, 0, sideW, sideH);
+          drawCameraFeed(ctx, cam3, cam3 ? `${cam3.id.split("_")[0]} (CU 2)` : "Camera 3 (Offline)", mainW, sideH, sideW, sideH);
 
           // Dividers
           ctx.fillStyle = "#1E293B";
@@ -845,6 +872,7 @@ export default function Studio() {
     isLive,
     drawVideoFit,
     drawCameraFeed,
+    getResolvedSlots,
     renderOverlay,
   ]);
 
@@ -1161,6 +1189,87 @@ export default function Studio() {
                     </button>
                   ))}
                 </div>
+
+                {activeLayout !== "single" && (
+                  <div className="mt-6 space-y-3 border-t border-gray-800 pt-4">
+                    <h3 className="font-bold text-xs text-gray-400 uppercase tracking-wider">
+                      Grid Slot Assignment
+                    </h3>
+                    <div className="space-y-2">
+                      {/* Slot 1 Assignment */}
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-gray-400 font-medium whitespace-nowrap">Slot 1 (Main/Left):</span>
+                        <select
+                          value={slotAssignments.slot1 || ""}
+                          onChange={(e) => setSlotAssignments(prev => ({ ...prev, slot1: e.target.value }))}
+                          className="bg-gray-800 text-white rounded px-2 py-1 border border-gray-700 w-36 outline-none focus:border-red-500"
+                        >
+                          <option value="">Auto Select</option>
+                          {Object.values(cameras).map(cam => (
+                            <option key={cam.id} value={cam.id}>{cam.id.split("_")[0]}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Slot 2 Assignment */}
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-gray-400 font-medium whitespace-nowrap">
+                          {activeLayout === "side-by-side" && "Slot 2 (Right):"}
+                          {activeLayout === "pip" && "Slot 2 (PiP Float):"}
+                          {activeLayout === "grid" && "Slot 2 (Top Right):"}
+                          {activeLayout === "wide-cu" && "Slot 2 (Top Thumbnail):"}
+                        </span>
+                        <select
+                          value={slotAssignments.slot2 || ""}
+                          onChange={(e) => setSlotAssignments(prev => ({ ...prev, slot2: e.target.value }))}
+                          className="bg-gray-800 text-white rounded px-2 py-1 border border-gray-700 w-36 outline-none focus:border-red-500"
+                        >
+                          <option value="">Auto Select</option>
+                          {Object.values(cameras).map(cam => (
+                            <option key={cam.id} value={cam.id}>{cam.id.split("_")[0]}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Slot 3 Assignment */}
+                      {(activeLayout === "grid" || activeLayout === "wide-cu") && (
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="text-gray-400 font-medium whitespace-nowrap">
+                            {activeLayout === "grid" && "Slot 3 (Bottom Left):"}
+                            {activeLayout === "wide-cu" && "Slot 3 (Bottom Thumbnail):"}
+                          </span>
+                          <select
+                            value={slotAssignments.slot3 || ""}
+                            onChange={(e) => setSlotAssignments(prev => ({ ...prev, slot3: e.target.value }))}
+                            className="bg-gray-800 text-white rounded px-2 py-1 border border-gray-700 w-36 outline-none focus:border-red-500"
+                          >
+                            <option value="">Auto Select</option>
+                            {Object.values(cameras).map(cam => (
+                              <option key={cam.id} value={cam.id}>{cam.id.split("_")[0]}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {/* Slot 4 Assignment */}
+                      {activeLayout === "grid" && (
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="text-gray-400 font-medium whitespace-nowrap">Slot 4 (Bottom Right):</span>
+                          <select
+                            value={slotAssignments.slot4 || ""}
+                            onChange={(e) => setSlotAssignments(prev => ({ ...prev, slot4: e.target.value }))}
+                            className="bg-gray-800 text-white rounded px-2 py-1 border border-gray-700 w-36 outline-none focus:border-red-500"
+                          >
+                            <option value="">Auto Select</option>
+                            {Object.values(cameras).map(cam => (
+                              <option key={cam.id} value={cam.id}>{cam.id.split("_")[0]}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
