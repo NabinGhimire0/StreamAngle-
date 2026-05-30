@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 
-const WS_BASE = "ws://localhost:8080";
+const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const WS_BASE = `${protocol}//${window.location.host}`;
 
 export default function useWebSocket(
   sessionCode,

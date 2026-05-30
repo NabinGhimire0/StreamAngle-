@@ -13,6 +13,8 @@ const ICE_SERVERS = {
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
   ],
 };
 
@@ -34,6 +36,7 @@ export default function Camera() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const peerConnectionRef = useRef(null);
+  const iceCandidateQueueRef = useRef([]);
 
   const { isConnected, clientID, send, on, off } = useWebSocket(
     joined ? sessionCode : null,
@@ -185,6 +188,14 @@ export default function Camera() {
             new RTCSessionDescription(msg.data.answer),
           );
           console.log("Remote description set successfully");
+          
+          // Process queued candidates
+          if (iceCandidateQueueRef.current && iceCandidateQueueRef.current.length > 0) {
+            for (const candidate of iceCandidateQueueRef.current) {
+              peerConnectionRef.current.addIceCandidate(candidate).catch(console.error);
+            }
+            iceCandidateQueueRef.current = [];
+          }
         } catch (err) {
           console.error("Failed to set remote description:", err);
         }
@@ -194,9 +205,14 @@ export default function Camera() {
     const handleCandidate = (msg) => {
       if (msg.data.candidate && peerConnectionRef.current) {
         console.log("Received ICE candidate from studio");
-        peerConnectionRef.current
-          .addIceCandidate(new RTCIceCandidate(msg.data.candidate))
-          .catch((err) => console.error("Failed to add ICE candidate:", err));
+        const candidate = new RTCIceCandidate(msg.data.candidate);
+        const pc = peerConnectionRef.current;
+        
+        if (pc.remoteDescription && pc.remoteDescription.type) {
+          pc.addIceCandidate(candidate).catch((err) => console.error("Failed to add ICE candidate:", err));
+        } else {
+          iceCandidateQueueRef.current.push(candidate);
+        }
       }
     };
 

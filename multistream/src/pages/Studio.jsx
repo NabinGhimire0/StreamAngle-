@@ -52,6 +52,8 @@ const ICE_SERVERS = {
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
   ],
 };
 
@@ -81,6 +83,7 @@ export default function Studio() {
   const cameraVideosRef = useRef({});
   const peerConnectionsRef = useRef({});
   const viewerPeerConnectionsRef = useRef({});
+  const iceCandidateQueuesRef = useRef({});
   const mediaRecorderRef = useRef(null);
   const commentaryStreamRef = useRef(null);
   const streamWSRef = useRef(null);
@@ -157,6 +160,68 @@ export default function Studio() {
 
     ctx.drawImage(video, drawX, drawY, drawW, drawH);
   }, []);
+
+  // Draw camera feed with premium HUD labels and fallbacks
+  const drawCameraFeed = useCallback((ctx, camera, label, x, y, w, h) => {
+    if (camera && camera.videoElement && camera.videoElement.readyState >= 2) {
+      drawVideoFit(ctx, camera.videoElement, x, y, w, h);
+      
+      // Draw sleek label tag overlay
+      ctx.save();
+      ctx.fillStyle = "rgba(15, 23, 42, 0.75)";
+      ctx.font = "bold 12px 'DM Sans', sans-serif";
+      const textWidth = ctx.measureText(label).width;
+      
+      const boxW = textWidth + 24;
+      const boxH = 24;
+      const boxX = x + 12;
+      const boxY = y + h - boxH - 12;
+      
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxW, boxH, 6);
+        ctx.fill();
+      } else {
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+      }
+      
+      // Active status dot indicator
+      ctx.fillStyle = "#22C55E";
+      ctx.beginPath();
+      ctx.arc(boxX + 10, boxY + boxH / 2, 4, 0, 2 * Math.PI);
+      ctx.fill();
+      
+      // Text label
+      ctx.fillStyle = "#F8FAFC";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, boxX + 18, boxY + boxH / 2);
+      ctx.restore();
+    } else {
+      // Premium broadcast placeholder
+      ctx.save();
+      ctx.fillStyle = "#090D11";
+      ctx.fillRect(x, y, w, h);
+      
+      // Subtle grid-dashed border outline
+      ctx.strokeStyle = "#1E293B";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 8]);
+      ctx.strokeRect(x + 12, y + 12, w - 24, h - 24);
+      
+      // Label text centered
+      ctx.fillStyle = "#475569";
+      ctx.font = "bold 15px 'DM Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label || "Offline Feed", x + w / 2, y + h / 2 - 10);
+      
+      ctx.font = "11px 'DM Sans', sans-serif";
+      ctx.fillStyle = "#334155";
+      ctx.fillText("Waiting for connection...", x + w / 2, y + h / 2 + 12);
+      ctx.restore();
+    }
+  }, [drawVideoFit]);
 
   // Render overlay
   const renderOverlay = useCallback((ctx, overlay) => {
@@ -236,37 +301,50 @@ export default function Studio() {
     async (stream) => {
       const token = localStorage.getItem("streamangle_token");
       const activeDests = destinations.filter((d) => d.is_active);
-
       if (activeDests.length === 0) {
         console.log("No active destinations");
         return false;
       }
 
-      // For now, just use the first active destination
       const dest = activeDests[0];
-
-      // Use wss for HTTPS, ws for HTTP
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${protocol}//localhost:8080/api/stream/ws?token=${token}&dest_id=${dest.id}`;
+      const wsUrl = `${protocol}//${window.location.host}/api/stream/ws?token=${token}&dest_id=${dest.id}`;
 
-      console.log("Connecting to WebSocket:", wsUrl);
-
+      console.log("Connecting WebSocket for streaming...");
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log("✅ WebSocket streaming connected");
+        console.log("✅ WebSocket open, creating MediaRecorder");
 
-        // Get the best supported MIME type
-        const mimeType = getSupportedMimeType();
+        // Prefer a MIME type that definitely supports audio+video
+        const mimeTypes = [
+          "video/webm;codecs=vp8,opus",
+          "video/webm;codecs=vp9,opus",
+          "video/webm;codecs=h264,opus",
+          "video/webm",
+        ];
+        let selectedMime = "";
+        for (const mime of mimeTypes) {
+          if (MediaRecorder.isTypeSupported(mime)) {
+            selectedMime = mime;
+            break;
+          }
+        }
+        console.log(`Using MediaRecorder mimeType: ${selectedMime}`);
 
-        // Start MediaRecorder on the stream
+        // Verify audio tracks are enabled
+        const audioTracks = stream.getAudioTracks();
+        console.log(`Audio tracks in stream: ${audioTracks.length}`);
+        audioTracks.forEach((t) => {
+          console.log(`  - ${t.label} enabled: ${t.enabled}`);
+          t.enabled = true;
+        });
+
         const mediaRecorder = new MediaRecorder(stream, {
-          mimeType: mimeType, // Use the detected MIME type
+          mimeType: selectedMime,
           videoBitsPerSecond: 2500000,
           audioBitsPerSecond: 128000,
         });
-
-        console.log("MediaRecorder mimeType:", mediaRecorder.mimeType);
 
         mediaRecorder.ondataavailable = (event) => {
           if (
@@ -274,29 +352,21 @@ export default function Studio() {
             event.data.size > 0 &&
             ws.readyState === WebSocket.OPEN
           ) {
-            console.log(`📹 Sending chunk: ${event.data.size} bytes`);
             ws.send(event.data);
+            if (Math.random() < 0.05) {
+              console.log(`📹 Chunk: ${event.data.size} bytes`);
+            }
           }
         };
 
-        mediaRecorder.onerror = (e) => {
-          console.error("MediaRecorder error:", e);
-        };
-
-        mediaRecorder.start(100); // Send small chunks frequently
+        mediaRecorder.onerror = (e) => console.error("MediaRecorder error:", e);
+        mediaRecorder.start(100);
         mediaRecorderRef.current = mediaRecorder;
       };
 
-      ws.onerror = (error) => {
-        console.error("WebSocket streaming error:", error);
-      };
-
-      ws.onclose = (event) => {
-        console.log(
-          "WebSocket streaming disconnected:",
-          event.code,
-          event.reason,
-        );
+      ws.onerror = (error) => console.error("WebSocket error:", error);
+      ws.onclose = () => {
+        console.log("WebSocket closed");
         if (
           mediaRecorderRef.current &&
           mediaRecorderRef.current.state === "recording"
@@ -310,38 +380,101 @@ export default function Studio() {
     },
     [destinations],
   );
+
+  const requestMicrophone = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop any existing commentary stream
+      if (commentaryStreamRef.current) {
+        commentaryStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      commentaryStreamRef.current = stream;
+      setCommentaryActive(true);
+      setCommentaryMuted(false);
+      return stream;
+    } catch (err) {
+      console.error("Failed to get microphone:", err);
+      return null;
+    }
+  };
   // Start canvas capture
   const startCanvasCapture = useCallback(async () => {
     if (!canvasRef.current) return;
 
     const canvas = canvasRef.current;
-    const stream = canvas.captureStream(30);
+    const canvasStream = canvas.captureStream(30);
+    const finalStream = new MediaStream();
 
-    // Add audio if available
-    if (commentaryActive && commentaryStreamRef.current) {
-      const audioTracks = commentaryStreamRef.current.getAudioTracks();
-      audioTracks.forEach((track) => stream.addTrack(track));
-    }
+    // Add video tracks
+    canvasStream
+      .getVideoTracks()
+      .forEach((track) => finalStream.addTrack(track));
 
+    // ---- AUDIO SOURCE SELECTION ----
+    let audioStream = null;
+
+    // 1. Use selected camera audio if available and not muted
     if (activeAudioSource && cameras[activeAudioSource]?.stream) {
-      const audioTracks = cameras[activeAudioSource].stream.getAudioTracks();
+      const camStream = cameras[activeAudioSource].stream;
+      const audioTracks = camStream.getAudioTracks();
       if (audioTracks.length > 0 && !mutedCameras[activeAudioSource]) {
-        audioTracks.forEach((track) => stream.addTrack(track));
+        audioStream = camStream;
+        console.log(`✅ Using audio from camera ${activeAudioSource}`);
       }
     }
 
-    // Start WebSocket streaming
-    await startWebSocketStreaming(stream);
+    // 2. Otherwise use commentary mic if active
+    if (!audioStream && commentaryActive && commentaryStreamRef.current) {
+      const micTracks = commentaryStreamRef.current.getAudioTracks();
+      if (micTracks.length > 0 && !commentaryMuted) {
+        audioStream = commentaryStreamRef.current;
+        console.log("✅ Using commentary mic audio");
+      }
+    }
 
-    console.log("Canvas capture started");
+    // 3. No audio yet? Force request microphone as fallback
+    if (!audioStream) {
+      console.warn("⚠️ No audio source – requesting microphone...");
+      const micStream = await requestMicrophone();
+      if (micStream && micStream.getAudioTracks().length > 0) {
+        audioStream = micStream;
+        console.log("✅ Using fallback microphone audio");
+      }
+    }
+
+    // Add audio tracks to final stream (if any)
+    if (audioStream) {
+      audioStream.getAudioTracks().forEach((track) => {
+        track.enabled = true;
+        finalStream.addTrack(track);
+      });
+    }
+
+    // Final check: log what we have
+    console.log(
+      `Final stream: video=${finalStream.getVideoTracks().length}, audio=${finalStream.getAudioTracks().length}`,
+    );
+
+    if (finalStream.getAudioTracks().length === 0) {
+      console.error("❌ NO AUDIO TRACK! Stream will be silent.");
+      alert(
+        "No audio source available. Please connect a camera with microphone or enable commentary mic.",
+      );
+      return;
+    }
+
+    // Start WebSocket streaming
+    await startWebSocketStreaming(finalStream);
   }, [
-    commentaryActive,
     activeAudioSource,
     cameras,
     mutedCameras,
+    commentaryActive,
+    commentaryStreamRef,
+    commentaryMuted,
     startWebSocketStreaming,
+    requestMicrophone,
   ]);
-
   // WebSocket message handlers
   const handleOffer = useCallback(
     async (msg) => {
@@ -365,21 +498,31 @@ export default function Studio() {
       }
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
+      peerConnectionsRef.current[cameraID] = pc;
+      iceCandidateQueuesRef.current[cameraID] = [];
 
       pc.ontrack = (event) => {
         if (event.streams && event.streams[0]) {
-          video.srcObject = event.streams[0];
+          const stream = event.streams[0];
+          console.log(
+            `Received stream from ${cameraID} – video: ${stream.getVideoTracks().length}, audio: ${stream.getAudioTracks().length}`,
+          );
+          video.srcObject = stream;
           video.onloadedmetadata = () => {
             setCameras((prev) => ({
               ...prev,
               [cameraID]: {
                 id: cameraID,
-                stream: event.streams[0],
+                stream: stream,
                 videoElement: video,
                 type: msg.data.camera_type || "phone",
               },
             }));
             setActiveCameraId((prev) => prev || cameraID);
+            // If this is the first camera and no audio source is set, select it
+            if (!activeAudioSource && stream.getAudioTracks().length > 0) {
+              setActiveAudioSource(cameraID);
+            }
           };
           video.play().catch(console.warn);
         }
@@ -393,10 +536,17 @@ export default function Studio() {
 
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        
+        // Process queued candidates
+        const queued = iceCandidateQueuesRef.current[cameraID] || [];
+        for (const candidate of queued) {
+          pc.addIceCandidate(candidate).catch(console.error);
+        }
+        iceCandidateQueuesRef.current[cameraID] = [];
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         send("answer", { answer }, cameraID);
-        peerConnectionsRef.current[cameraID] = pc;
       } catch (err) {
         console.error("Error handling offer:", err);
       }
@@ -405,11 +555,18 @@ export default function Studio() {
   );
 
   const handleCandidate = useCallback((msg) => {
-    const pc = peerConnectionsRef.current[msg.from];
+    const cameraID = msg.from;
+    const pc = peerConnectionsRef.current[cameraID];
     if (pc && msg.data.candidate) {
-      pc.addIceCandidate(new RTCIceCandidate(msg.data.candidate)).catch(
-        console.error,
-      );
+      const candidate = new RTCIceCandidate(msg.data.candidate);
+      if (pc.remoteDescription && pc.remoteDescription.type) {
+        pc.addIceCandidate(candidate).catch(console.error);
+      } else {
+        if (!iceCandidateQueuesRef.current[cameraID]) {
+          iceCandidateQueuesRef.current[cameraID] = [];
+        }
+        iceCandidateQueuesRef.current[cameraID].push(candidate);
+      }
     }
   }, []);
 
@@ -465,7 +622,7 @@ export default function Studio() {
     const loadData = async () => {
       try {
         const token = localStorage.getItem("streamangle_token");
-        const eventsRes = await fetch("http://localhost:8080/api/events", {
+        const eventsRes = await fetch("/api/events", {
           headers: { Authorization: `Bearer ${token}` },
         });
         const events = await eventsRes.json();
@@ -486,78 +643,210 @@ export default function Studio() {
 
   // Canvas rendering loop - CONTINUOUS REDRAWING
   // Canvas rendering loop - FORCE continuous updates at 30fps
-useEffect(() => {
-  const canvas = canvasRef.current;
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  
-  let lastFrameTime = 0;
-  const targetFPS = 30;
-  const frameInterval = 1000 / targetFPS;
-  let frameCount = 0;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
 
-  const render = (timestamp) => {
-    // Throttle to target FPS
-    if (timestamp - lastFrameTime < frameInterval) {
+    let lastFrameTime = 0;
+    const targetFPS = 30;
+    const frameInterval = 1000 / targetFPS;
+    let frameCount = 0;
+
+    const render = (timestamp) => {
+      // Throttle to target FPS
+      if (timestamp - lastFrameTime < frameInterval) {
+        frameRequestRef.current = requestAnimationFrame(render);
+        return;
+      }
+      lastFrameTime = timestamp;
+      frameCount++;
+
+      // Clear canvas
+      ctx.fillStyle = "#080C0F";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const cameraList = Object.values(cameras).sort((a, b) => a.id.localeCompare(b.id));
+      const primaryCam = cameras[activeCameraId] || cameraList[0] || null;
+
+      if (cameraList.length > 0) {
+        if (activeLayout === "single") {
+          if (primaryCam) {
+            drawCameraFeed(
+              ctx,
+              primaryCam,
+              `${primaryCam.id.split("_")[0]} (Main)`,
+              0,
+              0,
+              canvas.width,
+              canvas.height
+            );
+          }
+        } else if (activeLayout === "side-by-side") {
+          const cam1 = primaryCam;
+          const cam2 = cameraList.find(c => c.id !== cam1.id) || null;
+          const halfW = canvas.width / 2;
+
+          drawCameraFeed(
+            ctx,
+            cam1,
+            `${cam1.id.split("_")[0]} (Left)`,
+            0,
+            0,
+            halfW,
+            canvas.height
+          );
+          drawCameraFeed(
+            ctx,
+            cam2,
+            cam2 ? `${cam2.id.split("_")[0]} (Right)` : "Camera 2 (Offline)",
+            halfW,
+            0,
+            halfW,
+            canvas.height
+          );
+
+          // Divider
+          ctx.fillStyle = "#1E293B";
+          ctx.fillRect(halfW - 1, 0, 2, canvas.height);
+        } else if (activeLayout === "pip") {
+          const mainCam = primaryCam;
+          const pipCam = cameraList.find(c => c.id !== mainCam.id) || null;
+
+          // Main video background
+          drawCameraFeed(
+            ctx,
+            mainCam,
+            `${mainCam.id.split("_")[0]} (Main)`,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+          );
+
+          if (pipCam) {
+            const pipW = canvas.width / 4;
+            const pipH = canvas.height / 4;
+            const pipX = canvas.width - pipW - 20;
+            const pipY = canvas.height - pipH - 20;
+
+            ctx.save();
+            ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
+            ctx.shadowBlur = 15;
+            ctx.fillStyle = "#090D11";
+            ctx.fillRect(pipX - 2, pipY - 2, pipW + 4, pipH + 4);
+            ctx.restore();
+
+            drawCameraFeed(
+              ctx,
+              pipCam,
+              `${pipCam.id.split("_")[0]} (PiP)`,
+              pipX,
+              pipY,
+              pipW,
+              pipH
+            );
+          }
+        } else if (activeLayout === "grid") {
+          const w = canvas.width / 2;
+          const h = canvas.height / 2;
+
+          const cam1 = primaryCam;
+          const otherCams = cameraList.filter(c => c.id !== cam1.id);
+          const cam2 = otherCams[0] || null;
+          const cam3 = otherCams[1] || null;
+          const cam4 = otherCams[2] || null;
+
+          drawCameraFeed(ctx, cam1, `${cam1.id.split("_")[0]} (Cam 1)`, 0, 0, w, h);
+          drawCameraFeed(ctx, cam2, cam2 ? `${cam2.id.split("_")[0]} (Cam 2)` : "Camera 2 (Offline)", w, 0, w, h);
+          drawCameraFeed(ctx, cam3, cam3 ? `${cam3.id.split("_")[0]} (Cam 3)` : "Camera 3 (Offline)", 0, h, w, h);
+          drawCameraFeed(ctx, cam4, cam4 ? `${cam4.id.split("_")[0]} (Cam 4)` : "Camera 4 (Offline)", w, h, w, h);
+
+          // Grid dividers
+          ctx.fillStyle = "#1E293B";
+          ctx.fillRect(w - 1, 0, 2, canvas.height);
+          ctx.fillRect(0, h - 1, canvas.width, 2);
+        } else if (activeLayout === "wide-cu") {
+          const mainW = canvas.width * 0.75;
+          const sideW = canvas.width * 0.25;
+          const sideH = canvas.height / 2;
+
+          const mainCam = primaryCam;
+          const otherCams = cameraList.filter(c => c.id !== mainCam.id);
+          const sideCam1 = otherCams[0] || null;
+          const sideCam2 = otherCams[1] || null;
+
+          drawCameraFeed(ctx, mainCam, `${mainCam.id.split("_")[0]} (Wide)`, 0, 0, mainW, canvas.height);
+          drawCameraFeed(ctx, sideCam1, sideCam1 ? `${sideCam1.id.split("_")[0]} (CU 1)` : "Camera 2 (Offline)", mainW, 0, sideW, sideH);
+          drawCameraFeed(ctx, sideCam2, sideCam2 ? `${sideCam2.id.split("_")[0]} (CU 2)` : "Camera 3 (Offline)", mainW, sideH, sideW, sideH);
+
+          // Dividers
+          ctx.fillStyle = "#1E293B";
+          ctx.fillRect(mainW - 1, 0, 2, canvas.height);
+          ctx.fillRect(mainW, sideH - 1, sideW, 2);
+        }
+      } else {
+        ctx.fillStyle = "rgba(255,255,255,0.3)";
+        ctx.font = "24px 'DM Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(
+          "Waiting for cameras...",
+          canvas.width / 2,
+          canvas.height / 2,
+        );
+      }
+
+      // Draw overlays
+      overlays.forEach((overlay) => {
+        if (activeOverlays[overlay.id]) {
+          renderOverlay(ctx, overlay);
+        }
+      });
+
+      // Draw LIVE indicator with changing timestamp
+      if (isLive) {
+        ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
+        ctx.fillRect(16, 16, 70, 28);
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 12px 'DM Sans', sans-serif";
+        ctx.fillText("LIVE", 32, 35);
+
+        // FORCE canvas update - change this every frame
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.font = "14px monospace";
+        ctx.fillText(
+          `Frame: ${frameCount}`,
+          canvas.width - 100,
+          canvas.height - 20,
+        );
+        ctx.fillText(
+          new Date().toLocaleTimeString(),
+          canvas.width - 100,
+          canvas.height - 40,
+        );
+      }
+
       frameRequestRef.current = requestAnimationFrame(render);
-      return;
-    }
-    lastFrameTime = timestamp;
-    frameCount++;
+    };
 
-    // Clear canvas
-    ctx.fillStyle = "#080C0F";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    render();
 
-    const cameraList = Object.values(cameras);
-    const activeCamera = cameras[activeCameraId];
-
-    if (cameraList.length > 0) {
-      if (activeCamera?.videoElement) {
-        drawVideoFit(ctx, activeCamera.videoElement, 0, 0, canvas.width, canvas.height);
-      } else if (cameraList[0]?.videoElement) {
-        drawVideoFit(ctx, cameraList[0].videoElement, 0, 0, canvas.width, canvas.height);
+    return () => {
+      if (frameRequestRef.current) {
+        cancelAnimationFrame(frameRequestRef.current);
       }
-    } else {
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
-      ctx.font = "24px 'DM Sans', sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("Waiting for cameras...", canvas.width / 2, canvas.height / 2);
-    }
-
-    // Draw overlays
-    overlays.forEach((overlay) => {
-      if (activeOverlays[overlay.id]) {
-        renderOverlay(ctx, overlay);
-      }
-    });
-
-    // Draw LIVE indicator with changing timestamp
-    if (isLive) {
-      ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
-      ctx.fillRect(16, 16, 70, 28);
-      ctx.fillStyle = "#fff";
-      ctx.font = "bold 12px 'DM Sans', sans-serif";
-      ctx.fillText("LIVE", 32, 35);
-
-      // FORCE canvas update - change this every frame
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.font = "14px monospace";
-      ctx.fillText(`Frame: ${frameCount}`, canvas.width - 100, canvas.height - 20);
-      ctx.fillText(new Date().toLocaleTimeString(), canvas.width - 100, canvas.height - 40);
-    }
-
-    frameRequestRef.current = requestAnimationFrame(render);
-  };
-
-  render();
-  
-  return () => {
-    if (frameRequestRef.current) {
-      cancelAnimationFrame(frameRequestRef.current);
-    }
-  };
-}, [cameras, activeCameraId, overlays, activeOverlays, isLive, drawVideoFit, renderOverlay]);
+    };
+  }, [
+    cameras,
+    activeCameraId,
+    activeLayout,
+    overlays,
+    activeOverlays,
+    isLive,
+    drawVideoFit,
+    drawCameraFeed,
+    renderOverlay,
+  ]);
 
   // Go Live
   const goLive = async () => {
@@ -865,6 +1154,7 @@ useEffect(() => {
                     <button
                       key={layout.id}
                       onClick={() => changeLayout(layout.id)}
+                      title={layout.label}
                       className={`p-2 rounded text-xs font-bold transition ${activeLayout === layout.id ? "bg-red-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}
                     >
                       {layout.icon}
@@ -967,9 +1257,30 @@ useEffect(() => {
             )}
 
             {/* Audio Panel */}
+            {/* Audio Panel - Add source selection */}
             {activePanel === "audio" && (
               <div className="space-y-4">
                 <h3 className="font-bold text-sm text-gray-400 uppercase">
+                  Audio Source
+                </h3>
+                <select
+                  value={activeAudioSource || ""}
+                  onChange={(e) => setActiveAudioSource(e.target.value || null)}
+                  className="w-full bg-gray-800 text-white rounded-lg px-4 py-3"
+                >
+                  <option value="">No Audio</option>
+                  {Object.values(cameras).map((cam) => (
+                    <option key={cam.id} value={cam.id}>
+                      Camera: {cam.id.split("_")[0]}{" "}
+                      {cam.stream.getAudioTracks().length === 0
+                        ? "(no mic)"
+                        : ""}
+                    </option>
+                  ))}
+                  <option value="commentary">Commentary Mic</option>
+                </select>
+
+                <h3 className="font-bold text-sm text-gray-400 uppercase mt-6">
                   Camera Audio
                 </h3>
                 {Object.values(cameras).map((cam) => (
@@ -992,10 +1303,11 @@ useEffect(() => {
                       }}
                       className={`px-2 py-1 rounded text-xs ${mutedCameras[cam.id] ? "bg-red-600" : "bg-gray-700"}`}
                     >
-                      {mutedCameras[cam.id] ? "🔇" : "🔊"}
+                      {mutedCameras[cam.id] ? "🔇 Muted" : "🔊 Live"}
                     </button>
                   </div>
                 ))}
+
                 <h3 className="font-bold text-sm text-gray-400 uppercase mt-6">
                   Commentary Mic
                 </h3>

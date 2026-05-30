@@ -50,15 +50,11 @@ func (r *RTMPStreamer) StartStream(destinationID uint, serverURL, streamKey stri
 		r.logFiles[destinationID] = logFile
 	}
 
-	// CORRECT ORDER: video first, then audio, then encoding
+	// FIXED: Use a single input from browser (pipe:0) which contains both video AND audio
+	// The browser's MediaRecorder will send WebM with both video and audio tracks
 	args := []string{
 		"-re",
-		"-f", "webm",
-		"-i", "pipe:0", // Video input (from browser)
-		"-f", "lavfi",
-		"-i", "anullsrc=channel_layout=stereo:sample_rate=44100", // Silent audio
-		"-map", "0:v:0", // Map video from first input
-		"-map", "1:a:0", // Map audio from second input
+		"-i", "pipe:0", // Single input with both video and audio from browser
 		"-c:v", "libx264",
 		"-preset", "veryfast",
 		"-tune", "zerolatency",
@@ -70,7 +66,6 @@ func (r *RTMPStreamer) StartStream(destinationID uint, serverURL, streamKey stri
 		"-c:a", "aac",
 		"-b:a", "128k",
 		"-ar", "44100",
-		"-shortest",
 		"-f", "flv",
 		"-rtmp_live", "live",
 		rtmpURL,
@@ -112,29 +107,43 @@ func (r *RTMPStreamer) StartStream(destinationID uint, serverURL, streamKey stri
 
 	return nil
 }
-
 func (r *RTMPStreamer) buildRTMPURL(serverURL, streamKey string) string {
 	serverURL = strings.TrimSuffix(serverURL, "/")
 
-	// Handle YouTube URLs
+	// Log for debugging
+	log.Printf("[RTMP] Building URL - Server: %s, Key: %s", serverURL, streamKey)
+
+	// YouTube Live
 	if strings.Contains(serverURL, "youtube.com") {
-		// Ensure proper format: rtmp://a.rtmp.youtube.com/live2/stream_key
 		if !strings.HasSuffix(serverURL, "/live2") && !strings.HasSuffix(serverURL, "/live") {
-			// Already has the right format
+			if strings.Contains(serverURL, "rtmp.youtube.com") {
+				serverURL = serverURL + "/live2"
+			}
 		}
-		return serverURL + "/" + streamKey
+		result := serverURL + "/" + streamKey
+		log.Printf("[RTMP] YouTube URL: %s", result)
+		return result
 	}
 
-	// Handle Facebook
-	if strings.Contains(serverURL, "facebook") {
-		if !strings.HasPrefix(streamKey, "?") && !strings.Contains(streamKey, "?") {
-			streamKey = streamKey + "?ds=1&s_l=1"
-		}
-		return serverURL + "/" + streamKey
+	// Facebook Live - NEEDS A SLASH between serverURL and streamKey
+	if strings.Contains(serverURL, "facebook.com") || strings.Contains(serverURL, "fbcdn") {
+		// Add the slash!
+		result := serverURL + "/" + streamKey
+		log.Printf("[RTMP] Facebook URL: %s", result)
+		return result
 	}
 
-	// Default
-	return strings.TrimSuffix(serverURL, "/") + "/" + streamKey
+	// Twitch
+	if strings.Contains(serverURL, "twitch.tv") {
+		result := serverURL + "/" + streamKey
+		log.Printf("[RTMP] Twitch URL: %s", result)
+		return result
+	}
+
+	// Custom RTMP
+	result := serverURL + "/" + streamKey
+	log.Printf("[RTMP] Custom URL: %s", result)
+	return result
 }
 
 func (r *RTMPStreamer) findFFmpegPath() string {
